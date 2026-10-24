@@ -3,6 +3,7 @@
   'use strict';
   const { W, H, G } = KP; const A = KP.art;
   const PX = 300, MPX = 20, GRAV = 3000, JV = 1060, JV2 = 960;
+  const GLIDE_HOLD = 0.15; // 下落时按住超过这个秒数才算滑翔，松得更快就是跳跃
   const RACE_LEN = 2000;
   const rnd = (a, b) => a + Math.random() * (b - a);
   const clamp = (v, a, b) => v < a ? a : v > b ? b : v;
@@ -106,7 +107,7 @@
         energy: Math.min(100, M.startEnergy), skill: 0,
         eff: { magnet: M.magnetStart, dash: M.dashStart, giant: 0, double: 0, flight: 0 },
         dead: false, deadT: 0, spin: 0, runT: 0, stumble: 0, giantK: 1, combo: 0, comboT: 0,
-        gliding: false, glidesUsed: 0, glideT: 0, glideLock: false,
+        gliding: false, glidesUsed: 0, glideT: 0, glidePend: 0,
         petX: PX - 80, petY: (this.fly ? 380 : G) - 150
       };
       this.speed = this.baseSpeed();
@@ -157,20 +158,32 @@
       this.jumpHeld = down;
       const p = this.p;
       if (!p) return;
-      if (!down) { p.gliding = false; return; }
+      if (!down) {
+        p.gliding = false;
+        // 轻按（没到滑翔判定时间就松开）= 跳跃
+        if (p.glidePend > 0) { p.glidePend = 0; if (this.running && !this.paused && !p.dead && !p.ground) this.airJump(); }
+        return;
+      }
       if (!this.running || this.paused || p.dead || this.finished) return;
       if (this.isFlying()) return;
       const canGlide = p.glidesUsed < this.maxGlides;
       if (p.ground) {
         p.vy = -JV; p.ground = false; p.jumps = 1; p.slideT = 0;
         KP.audio.sfx('jump'); this.puff(PX, p.y, 6);
-      } else if (canGlide && p.jumps >= 1 && (p.vy > 0 || p.jumps >= this.maxJumps)) {
-        this.startGlide();
+      } else if (canGlide && p.jumps >= this.maxJumps) {
+        this.startGlide(); // 跳跃段数用完，按下就是滑翔
+      } else if (canGlide && p.jumps >= 1 && p.vy > 0) {
+        p.glidePend = GLIDE_HOLD; // 下落中：先等一下，看是轻按（跳）还是按住（滑翔）
       } else if (p.jumps < this.maxJumps) {
-        if (p.jumps === 0) p.jumps = 1;
-        p.vy = -JV2; p.jumps++; p.spin = 1; p.gliding = false;
-        KP.audio.sfx('jump2'); this.puff(PX, p.y - 20, 8, '#ffffff');
+        this.airJump();
       }
+    }
+    airJump() {
+      const p = this.p;
+      if (p.jumps >= this.maxJumps) return;
+      if (p.jumps === 0) p.jumps = 1;
+      p.vy = -JV2; p.jumps++; p.spin = 1; p.gliding = false;
+      KP.audio.sfx('jump2'); this.puff(PX, p.y - 20, 8, '#ffffff');
     }
     startGlide() {
       const p = this.p;
@@ -182,7 +195,7 @@
       this.slideHeld = down;
       const p = this.p;
       if (!down || !this.running || this.paused || !p || p.dead || this.isFlying()) return;
-      if (!p.ground) { p.vy = Math.max(p.vy, 1600); p.gliding = false; }
+      if (!p.ground) { p.vy = Math.max(p.vy, 1600); p.gliding = false; p.glidePend = 0; }
       else { p.slideT = 0.55; KP.audio.sfx('slide'); }
     }
     useSkill() {
@@ -536,7 +549,11 @@
       } else {
         const prevY = p.y, wasGround = p.ground;
         p.vy += GRAV * (this.M.lowGrav ? 0.9 : 1) * dt;
-        // 滑翔：由 jump() 立即开启，按住保持，每段最长 1.2 秒
+        // 滑翔：下落时按住超过 GLIDE_HOLD 秒开启，按住保持，每段最长 1.2 秒
+        if (p.glidePend > 0) {
+          p.glidePend -= dt;
+          if (p.glidePend <= 0) { p.glidePend = 0; if (this.jumpHeld && !p.ground) this.startGlide(); }
+        }
         if (p.gliding) {
           p.glideT -= dt;
           if (!this.jumpHeld || p.glideT <= 0) p.gliding = false;
@@ -556,7 +573,7 @@
             if (!over || solid) { p.y = G; p.vy = 0; p.ground = true; }
           }
         }
-        if (p.ground && !wasGround) { p.jumps = 0; p.spin = 0; p.glidesUsed = 0; p.gliding = false; this.puff(PX, p.y, 5); }
+        if (p.ground && !wasGround) { p.jumps = 0; p.spin = 0; p.glidesUsed = 0; p.gliding = false; p.glidePend = 0; this.puff(PX, p.y, 5); }
         p.slideT -= dt;
         p.sliding = p.ground && (this.slideHeld || p.slideT > 0);
         if (p.y > G + 170) this.fallPit();
@@ -977,7 +994,7 @@
       if (this.hint > 0) {
         c.globalAlpha = Math.min(1, this.hint);
         const msg = this.fly ? '按住 空格 / 右侧屏幕 上升，松开下降 · E 释放技能'
-          : '空格 跳跃（可' + this.maxJumps + '段跳）' + (this.maxGlides ? ' · 起跳后下落时按住空格立即滑翔' : '') + ' · ↓ 下滑 · E 技能';
+          : '空格 跳跃（可' + this.maxJumps + '段跳）' + (this.maxGlides ? ' · 下落时轻按再跳、按住滑翔' : '') + ' · ↓ 下滑 · E 技能';
         c.fillStyle = 'rgba(30,14,60,.55)'; A.rr(c, W / 2 - 380, H - 64, 760, 44, 22); c.fill();
         txt(msg, W / 2, H - 42, 21, '#fff', 'center');
         c.globalAlpha = 1;

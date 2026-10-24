@@ -220,7 +220,7 @@
       stats.push(['跳跃', item.jumps + ' 段'], ['滑翔', item.glides + ' 段'], ['等级', lv ? lv + '/' + KP.LEVEL_MAX : '—'], ['道具持续', '+' + KP.levelItemPct(lv || 1) + '%']);
       desc = `<div><span class="k">技能 · ${item.skill.name}</span>：${skillText(item)}</div><div><span class="k">天赋</span>：${item.passive}</div>
         <div><span class="k">升级</span>：每升一级，所有道具持续时间 +${KP.LEVEL_ITEM_PCT}%</div>
-        <div style="opacity:.75;margin-top:4px">滑翔：起跳后，下落时按住跳跃键立即滑翔，每段最长 1.2 秒</div>`;
+        <div style="opacity:.75;margin-top:4px">滑翔：下落时轻按跳跃键是多段跳，按住约 0.15 秒就开始滑翔，每段最长 1.2 秒</div>`;
     } else if (kind === 'mounts') {
       sub = item.id === 'none' ? '不骑坐骑' : '被撞时坐骑会替你挡下一次';
       const lv = S.level('mounts', item.id);

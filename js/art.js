@@ -341,9 +341,11 @@
   }
   A.flame = flame;
 
+  A._CH = CH; A._limb = limb; A._shoe = shoe; A._hand = hand; A._headBase = headBase; A._eyes = eyes; A._basicTorso = basicTorso; A._blink = blink;
+
   A.drawChar = function (c, id, x, y, o) {
     o = o || {};
-    const D = CH[id], time = o.time || 0, t = o.t || 0;
+    const D = CH[id] || CH.afei, time = o.time || 0, t = o.t || 0;
     const P = getPose(o.pose || 'idle', t, time);
     c.save();
     c.translate(x, y);
@@ -363,8 +365,10 @@
   };
 
   // ---------- 坐骑 ----------
+  A.mountDraw = {}; A.mountSaddle = {};
   A.saddle = function (id, o) {
     const sl = o.slide ? 0.7 : 1;
+    if (A.mountSaddle[id]) return A.mountSaddle[id](o, sl);
     if (id === 'wheel') return { x: 0, y: -22, stand: true };
     if (id === 'unicorn') return { x: -6, y: -70 * sl };
     const bob = Math.sin((o.time || 0) * 5) * 3;
@@ -379,6 +383,7 @@
     if (id === 'wheel') drawWheels(c, o);
     else if (id === 'unicorn') drawUnicorn(c, o);
     else if (id === 'dragon') drawDragon(c, o);
+    else if (A.mountDraw[id]) A.mountDraw[id](c, o);
     c.restore();
   };
 

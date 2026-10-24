@@ -1,4 +1,4 @@
-// 游戏核心：物理、关卡生成、碰撞、技能、模式、渲染
+// 游戏核心：物理、关卡生成、碰撞、技能、宠物、宝物、模式、渲染
 (function () {
   'use strict';
   const { W, H, G } = KP; const A = KP.art;
@@ -13,7 +13,16 @@
     for (const [k, w] of list) { r -= Math.max(0, w); if (r <= 0) return k; }
     return list[0][0];
   }
-  const charOf = id => KP.CHARS.find(c => c.id === id);
+
+  // 角色天赋
+  const PAS = {
+    afei: { dashPct: 50 }, mengmeng: { magnetPct: 50 }, tiequan: { startShield: 1 }, xiaoyan: { revive: 1 },
+    xiaoying: { scorePct: 5 }, bingbing: { giantPct: 50 }, leiming: { energyPct: 15 }, ali: { coinPct: 10 },
+    miaomiao: { magnetPct: 30 }, langlang: { itemPct: 10 }, tuantuan: { startShield: 1 }, luna: { scorePct: 15 },
+    luxi: { smashMul: 2 }, jieke: { coinPct: 15 }, yase: { startShield: 1 }, tutu: { lowGrav: 1 },
+    bili: { dashPct: 30 }, xingxing: { flyScorePct: 20 }, aoxiao: { coinPct: 15, scorePct: 10 },
+    mosheng: { itemRate: 20 }, huahua: { revive: 1 }, wukong: { dashPct: 50, scorePct: 10 }
+  };
 
   class Game {
     constructor(cv) {
@@ -22,34 +31,89 @@
       this.p = null; this.onEnd = null;
     }
 
+    // 汇总角色天赋、坐骑、宠物、宝物的加成
+    buildMods(cfg) {
+      const M = {
+        coinPct: 0, scorePct: 0, itemPct: 0, dashPct: 0, magnetPct: 0, giantPct: 0, energyPct: 0, itemRate: 0,
+        diamondMul: 1, startShield: 0, revive: 0, reviveChance: 0, smashMul: 1, lowGrav: 0, flyScorePct: 0,
+        dashStart: 0, magnetStart: 0, startEnergy: 30, bee: false
+      };
+      const add = o => { for (const k in o) M[k] = (M[k] || 0) + o[k]; };
+      const P = PAS[cfg.char]; if (P) { add(P); if (P.smashMul) M.smashMul = 1 + P.smashMul; }
+      const timers = [];
+      const T = cfg.tfx || {};
+      for (const k of ['coinPct', 'scorePct', 'itemPct', 'energyPct', 'itemRate', 'reviveChance']) if (T[k]) M[k] += T[k];
+      if (T.allPct) { M.coinPct += T.allPct; M.scorePct += T.allPct; }
+      if (T.dashStart) M.dashStart = Math.max(M.dashStart, T.dashStart);
+      if (T.magnetStart) M.magnetStart = Math.max(M.magnetStart, T.magnetStart);
+      if (T.startEnergy) M.startEnergy = Math.max(M.startEnergy, T.startEnergy);
+      if (T.diamondPct) M.diamondMul *= 1 + T.diamondPct / 100;
+      if (T.guardEvery) timers.push({ kind: 'shield', every: T.guardEvery, cd: T.guardEvery, src: 'treasure' });
+      const mt = KP.mountOf(cfg.mount);
+      switch (mt.ability) {
+        case 'coin': M.coinPct += 15; break;
+        case 'energy': M.energyPct += 25; break;
+        case 'dash': M.dashStart = Math.max(M.dashStart, 3); break;
+        case 'item': M.itemPct += 30; break;
+        case 'diamond': M.diamondMul *= 2; break;
+        case 'shield': timers.push({ kind: 'shield', every: 25, cd: 25, src: 'mount' }); break;
+        case 'magnet': timers.push({ kind: 'magnet', every: 15, cd: 8, src: 'mount' }); break;
+        case 'fire': timers.push({ kind: 'fire', every: 8, cd: 3, src: 'mount' }); break;
+      }
+      switch (cfg.pet) {
+        case 'bee': M.bee = true; break;
+        case 'fairy': M.energyPct += 30; break;
+        case 'owl': M.itemPct += 30; break;
+        case 'firedrake': timers.push({ kind: 'fire', every: 12, cd: 5, src: 'pet' }); break;
+        case 'starbaby': M.scorePct += 10; break;
+        case 'ghost': timers.push({ kind: 'shield', every: 30, cd: 30, src: 'pet' }); break;
+        case 'luckycat': M.coinPct += 20; break;
+        case 'robot': timers.push({ kind: 'magnet', every: 20, cd: 10, src: 'pet' }); break;
+        case 'penguin': M.dashStart = Math.max(M.dashStart, 3); break;
+        case 'gembunny': M.diamondMul *= 2; M.coinPct += 10; break;
+      }
+      this.timers = timers;
+      return M;
+    }
+
     start(cfg) {
       this.cfg = cfg;
       const m = this.mode = cfg.mode;
       this.theme = KP.MODES.find(x => x.id === m).theme;
-      this.charId = cfg.char; this.ch = charOf(cfg.char);
+      this.charId = cfg.char; this.ch = KP.charOf(cfg.char);
+      this.stype = this.ch.skill.type;
       this.mountId = cfg.mount === 'none' ? null : cfg.mount;
+      this.mountInfo = KP.mountOf(cfg.mount);
+      this.mountStand = !!(this.mountId && A.saddle(this.mountId, { time: 0 }).stand);
+      this.petId = cfg.pet && cfg.pet !== 'none' ? cfg.pet : null;
+      const pet = KP.petOf(cfg.pet);
+      this.maxJumps = Math.min(4, this.ch.jumps + (pet.jump || 0));
+      this.maxGlides = Math.min(3, this.ch.glides + (pet.glide || 0));
+      const M = this.M = this.buildMods(cfg);
       this.fly = m === 'fly';
-      this.cam = 0; this.time = 0; this.dist = 0; this.coins = 0; this.score = 0; this.smashed = 0;
+      this.cam = 0; this.time = 0; this.dist = 0; this.coins = 0; this.gems = 0; this.score = 0; this.smashed = 0;
       this.obs = []; this.coinA = []; this.items = []; this.pits = []; this.plats = [];
-      this.parts = []; this.texts = []; this.runaways = []; this.trail = []; this.trailT = 0;
+      this.parts = []; this.texts = []; this.runaways = []; this.trail = []; this.trailT = 0; this.rainT = 0;
       this.genX = this.fly ? 1100 : 950; this.lastGy = 360;
       this.p = {
         y: this.fly ? 380 : G, vy: 0, ground: !this.fly, jumps: 0, slideT: 0, sliding: false,
-        mount: this.mountId, inv: 0, shield: this.charId === 'tiequan' ? 1 : 0,
-        revive: this.charId === 'xiaoyan' ? 1 : 0, energy: 30, skill: 0,
-        eff: { magnet: 0, dash: 0, giant: 0, double: 0, flight: 0 },
-        dead: false, deadT: 0, spin: 0, runT: 0, stumble: 0, fireCd: 3, giantK: 1, combo: 0, comboT: 0
+        mount: this.mountId, inv: 0, shield: Math.min(3, M.startShield), revive: M.revive, chanceUsed: false,
+        energy: Math.min(100, M.startEnergy), skill: 0,
+        eff: { magnet: M.magnetStart, dash: M.dashStart, giant: 0, double: 0, flight: 0 },
+        dead: false, deadT: 0, spin: 0, runT: 0, stumble: 0, giantK: 1, combo: 0, comboT: 0,
+        gliding: false, glidesUsed: 0, glideT: 0, glideLock: false,
+        petX: PX - 80, petY: (this.fly ? 380 : G) - 150
       };
       this.speed = this.baseSpeed();
-      this.shake = 0; this.flash = 0; this.flashCol = '#fff'; this.shock = 0;
-      this.breath = 0;
+      this.shake = 0; this.flash = 0; this.flashCol = '#fff'; this.shock = 0; this.breath = 0; this.breathSrc = 'mount';
       this.ended = false; this.running = true; this.paused = false;
       this.finished = false; this.finishT = 0; this.rank = 0; this.finishOrder = [];
       this.racers = null;
       if (m === 'race') {
         const fs = [1.03, 0.995, 0.965].sort(() => Math.random() - 0.5);
-        this.racers = KP.CHARS.filter(c => c.id !== this.charId).map((ch, i) => ({
-          id: ch.id, name: ch.name.split('·')[1], dist: 0, f: fs[i], stumble: 0, nextS: rnd(4, 10), t: i, done: false, lane: i
+        const others = KP.CHARS.filter(c => c.id !== this.charId).sort(() => Math.random() - 0.5).slice(0, 3);
+        this.racers = others.map((ch, i) => ({
+          id: ch.id, name: ch.name.split('·').pop(), dist: 0, f: fs[i], stumble: 0, nextS: rnd(4, 10), t: i, done: false, lane: i
         }));
       }
       this.jumpHeld = false; this.slideHeld = false;
@@ -68,27 +132,35 @@
       }
     }
     mult() {
-      let k = this.mode === 'speed' ? 2 : 1;
-      if (this.p.mount) k *= 1 + KP.MOUNTS.find(m => m.id === this.p.mount).bonus;
-      return k;
+      let k = 1 + this.M.scorePct / 100;
+      if (this.p.mount) k += this.mountInfo.bonus;
+      if (this.fly) k += this.M.flyScorePct / 100;
+      return k * (this.mode === 'speed' ? 2 : 1);
     }
-    isDashing() { const p = this.p; return p.eff.dash > 0 || (this.charId === 'afei' && p.skill > 0); }
-    isGiant() { const p = this.p; return p.eff.giant > 0 || (this.charId === 'xiaoyan' && p.skill > 0); }
+    skillOn(type) { return this.p.skill > 0 && this.stype === type; }
+    isDashing() { return this.p.eff.dash > 0 || this.skillOn('dash'); }
+    isGiant() { return this.p.eff.giant > 0 || this.skillOn('giant'); }
     isFlying() { return this.fly || this.p.eff.flight > 0; }
+    itemDur(type) {
+      const M = this.M;
+      const extra = { dash: M.dashPct, magnet: M.magnetPct, giant: M.giantPct }[type] || 0;
+      return KP.ITEMS[type].dur * (1 + (M.itemPct + extra) / 100);
+    }
 
     // ---------- 输入 ----------
     jump(down) {
       this.jumpHeld = down;
       const p = this.p;
-      if (!down || !this.running || this.paused || !p || p.dead || this.finished) return;
+      if (!p) return;
+      if (!down) { p.glideLock = false; return; }
+      if (!this.running || this.paused || p.dead || this.finished) return;
       if (this.isFlying()) return;
-      const maxJ = p.mount === 'wheel' ? 3 : 2;
       if (p.ground) {
         p.vy = -JV; p.ground = false; p.jumps = 1; p.slideT = 0;
         KP.audio.sfx('jump'); this.puff(PX, p.y, 6);
-      } else if (p.jumps < maxJ) {
+      } else if (p.jumps < this.maxJumps) {
         if (p.jumps === 0) p.jumps = 1;
-        p.vy = -JV2; p.jumps++; p.spin = 1;
+        p.vy = -JV2; p.jumps++; p.spin = 1; p.gliding = false;
         KP.audio.sfx('jump2'); this.puff(PX, p.y - 20, 8, '#ffffff');
       }
     }
@@ -96,22 +168,27 @@
       this.slideHeld = down;
       const p = this.p;
       if (!down || !this.running || this.paused || !p || p.dead || this.isFlying()) return;
-      if (!p.ground) p.vy = Math.max(p.vy, 1600);
+      if (!p.ground) { p.vy = Math.max(p.vy, 1600); p.gliding = false; p.glideLock = true; }
       else { p.slideT = 0.55; KP.audio.sfx('slide'); }
     }
     useSkill() {
       const p = this.p;
       if (!this.running || this.paused || !p || p.dead || p.energy < 100 || this.finished) return;
       p.energy = 0;
-      const id = this.charId, col = this.ch.color;
+      const col = this.ch.color, type = this.stype, dur = KP.SKILLS[type].dur;
       this.bigText(this.ch.skill.name + '！', col);
       KP.audio.sfx('skill'); this.flash = 0.45; this.flashCol = col;
-      if (id === 'afei') p.skill = 5;
-      else if (id === 'mengmeng') p.skill = 7;
-      else if (id === 'xiaoyan') { p.skill = 6; this.burst(this.cam + PX, p.y - 60, 40, ['#ff3d17', '#ffb02e', '#fff2a0'], 600); }
-      else if (id === 'tiequan') {
-        p.skill = 0.8; p.shield = 1; this.shake = 0.6; this.shock = 0.01;
-        for (const o of this.obs) if (!o.dead && o.x < this.cam + W + 200) this.smash(o, true);
+      p.skill = dur;
+      switch (type) {
+        case 'giant': this.burst(this.cam + PX, p.y - 60, 40, [col, '#ffb02e', '#fff2a0'], 600); break;
+        case 'shock':
+          p.shield = Math.min(3, p.shield + 1); this.shake = 0.6; this.shock = 0.01;
+          for (const o of this.obs) if (!o.dead && o.x < this.cam + W + 200) this.smash(o, true);
+          break;
+        case 'flight':
+          if (!this.fly) { p.eff.flight = Math.max(p.eff.flight, dur); p.vy = 0; p.ground = false; }
+          break;
+        case 'guard': p.shield = Math.min(3, p.shield + 2); p.inv = Math.max(p.inv, dur); break;
       }
     }
 
@@ -133,6 +210,9 @@
       if (this.mountId && !p.mount) list.push(['mount', 3]);
       this.items.push({ x, y, type: weighted(list) });
     }
+    maybeGem(x, y) {
+      if (Math.random() < 0.035 * this.M.diamondMul) this.coinA.push({ x, y, kind: 'gem' });
+    }
 
     genGround() {
       const p = this.p, sp = this.speed, d = clamp(this.dist / (MPX * 2500), 0, 1), x = this.genX;
@@ -142,6 +222,7 @@
       }
       if (p.eff.flight > 1.2) {
         for (let i = 0; i < 16; i++) this.coinA.push({ x: x + i * 46, y: 300 + Math.sin((x + i * 46) * 0.012) * 70 });
+        this.maybeGem(x + 400, 220);
         this.genX = x + 16 * 46 + 40; return;
       }
       const t = weighted([
@@ -177,8 +258,7 @@
           w = 96; break;
         }
         case 'bird': {
-          const o = { type: 'bird', x: x + 120, y: G - 131, by: G - 131, w: 56, h: 42, vx: 140, ph: rnd(0, 6), amp: 5 };
-          this.obs.push(o);
+          this.obs.push({ type: 'bird', x: x + 120, y: G - 131, by: G - 131, w: 56, h: 42, vx: 140, ph: rnd(0, 6), amp: 5 });
           this.coinLine(x - 60, G - 24, 6);
           w = 200; break;
         }
@@ -227,7 +307,8 @@
           w = gap + 200; break;
         }
       }
-      if (t !== 'plats' && Math.random() < 0.12) this.addItem(x + w / 2, G - 190);
+      if (t !== 'plats' && Math.random() < 0.12 * (1 + this.M.itemRate / 100)) this.addItem(x + w / 2, G - 190);
+      else this.maybeGem(x + w / 2, G - 230);
       this.genX = x + w + sp * rnd(0.68, 1.0);
     }
 
@@ -259,8 +340,7 @@
           w = 18 * 46; break;
         }
         case 'birds': {
-          const n = 3;
-          for (let i = 0; i < n; i++) {
+          for (let i = 0; i < 3; i++) {
             const by = 140 + i * 150 + rnd(-30, 30);
             this.obs.push({ type: 'bird', x: x + i * 160, y: by, by, w: 56, h: 42, vx: 170, ph: rnd(0, 6), amp: 30 });
           }
@@ -268,7 +348,8 @@
           w = 500; break;
         }
       }
-      if (Math.random() < 0.16) this.addItem(x + w / 2 + 120, rnd(180, 480));
+      if (Math.random() < 0.16 * (1 + this.M.itemRate / 100)) this.addItem(x + w / 2 + 120, rnd(180, 480));
+      else this.maybeGem(x + w / 2 + 120, rnd(180, 480));
       this.genX = x + w + sp * rnd(0.62, 0.9);
     }
 
@@ -278,7 +359,10 @@
       let w, h, ox = 0, oy = 0;
       if (this.isFlying()) { if (p.mount) { w = 86; h = 96; } else { w = 78; h = 46; ox = 8; oy = -10; } }
       else if (p.sliding) { w = p.mount ? 84 : 70; h = p.mount ? 66 : 46; ox = p.mount ? 0 : 6; }
-      else if (p.mount) { w = p.mount === 'wheel' ? 44 : 78; h = p.mount === 'wheel' ? 120 : 134; }
+      else if (p.mount) {
+        if (this.mountStand) { w = 44; h = 98 - A.saddle(p.mount, { time: this.time }).y; }
+        else { w = 78; h = 134; }
+      }
       else { w = 42; h = 98; }
       w *= k; h *= k;
       return { x: px - w / 2 + ox, y: p.y - h + oy, w, h };
@@ -286,7 +370,7 @@
 
     smash(o, quiet) {
       o.dead = true; this.smashed++;
-      this.score += 20 * this.mult();
+      this.score += 20 * this.M.smashMul * this.mult();
       const cx = o.x + o.w / 2, cy = Math.max(o.y, o.y + o.h - 80) + Math.min(o.h, 80) / 2;
       const cols = { box: ['#f0b46a', '#8a4c1e'], spike: ['#c8cee0', '#6b7696'], wall: ['#9aa6c4', '#5fc24a'], bar: ['#ffd24a', '#2b2440'], bird: ['#a668ff', '#ffffff'], crysT: ['#d6aaff', '#8c5af0'], crysB: ['#d6aaff', '#8c5af0'], mine: ['#6b6f84', '#ff4040'] }[o.type];
       this.burst(cx, cy, 16, cols, 700, 'sq');
@@ -296,13 +380,19 @@
       o.dead = true;
       const cx = o.x + o.w / 2, top = Math.max(o.y, o.y + o.h - 90), bot = Math.min(o.y + o.h, G - 20);
       for (let i = 0; i < 3; i++) this.coinA.push({ x: cx + (i - 1) * 30, y: top + (bot - top) * (i + 1) / 4, kind: 'star', mag: true });
-      this.burst(cx, (top + bot) / 2, 12, ['#ff8ad8', '#ffe14d', '#ffffff'], 400, 'star');
+      this.burst(cx, (top + bot) / 2, 12, [this.ch.color, '#ffe14d', '#ffffff'], 400, 'star');
+    }
+    canRevive() {
+      const p = this.p;
+      if (p.revive > 0) { p.revive--; return true; }
+      if (this.M.reviveChance && !p.chanceUsed) { p.chanceUsed = true; if (Math.random() * 100 < this.M.reviveChance) return true; }
+      return false;
     }
     hurt(o) {
       const p = this.p;
       o.hitDone = true;
-      if (p.shield) {
-        p.shield = 0; p.inv = 1.2; KP.audio.sfx('shield');
+      if (p.shield > 0) {
+        p.shield--; p.inv = 1.2; KP.audio.sfx('shield');
         this.burst(this.cam + PX, p.y - 50, 20, ['#8fe9ff', '#ffffff'], 500);
         this.text('护盾抵挡！', '#8fe9ff'); return;
       }
@@ -311,7 +401,7 @@
         p.stumble = 1.0; p.inv = 1.6; this.shake = 0.3; KP.audio.sfx('hit');
         this.text('绊倒了！', '#ff8a8a'); return;
       }
-      if (p.revive) { this.doRevive(); return; }
+      if (this.canRevive()) { this.doRevive(); return; }
       this.die();
     }
     loseMount() {
@@ -322,10 +412,10 @@
     }
     doRevive() {
       const p = this.p;
-      p.revive = 0; p.inv = 2.5; this.flash = 0.6; this.flashCol = '#ff8a1f';
+      p.inv = 2.5; this.flash = 0.6; this.flashCol = this.ch.color;
       for (const o of this.obs) if (!o.dead && o.x < this.cam + W) this.smash(o, true);
-      this.burst(this.cam + PX, p.y - 50, 50, ['#ff3d17', '#ffb02e', '#fff2a0'], 800);
-      this.bigText('浴火重生！', '#ff8a1f'); KP.audio.sfx('skill');
+      this.burst(this.cam + PX, p.y - 50, 50, [this.ch.color, '#ffb02e', '#fff2a0'], 800);
+      this.bigText('复活！', this.ch.color); KP.audio.sfx('skill');
     }
     die() {
       const p = this.p;
@@ -336,9 +426,9 @@
       const p = this.p;
       let saved = '';
       if (this.mode === 'race') saved = 'race';
-      else if (p.shield) { p.shield = 0; saved = '护盾救援！'; }
+      else if (p.shield > 0) { p.shield--; saved = '护盾救援！'; }
       else if (p.mount) { this.runaways.push({ id: p.mount, x: this.cam + PX, y: G + 60, vy: -900, t: 0 }); p.mount = null; saved = '坐骑救援！'; }
-      else if (p.revive) { p.revive = 0; saved = '浴火重生！'; this.flash = 0.5; this.flashCol = '#ff8a1f'; }
+      else if (this.canRevive()) { saved = '复活！'; this.flash = 0.5; this.flashCol = this.ch.color; }
       if (!saved) { p.dead = true; p.deadT = 0.6; p.vy = 300; KP.audio.sfx('die'); KP.audio.stopMusic(); return; }
       p.y = G + 60; p.vy = -1650; p.inv = 1.8; p.jumps = 1;
       if (saved === 'race') { p.stumble = 0.8; this.text('掉坑了！', '#ff8a8a'); }
@@ -349,16 +439,35 @@
       const p = this.p; it.taken = true;
       KP.audio.sfx('item');
       const base = KP.ITEMS[it.type];
-      let dur = base.dur;
-      if (it.type === 'dash' && this.charId === 'afei') dur *= 1.5;
-      if (it.type === 'magnet' && this.charId === 'mengmeng') dur *= 1.5;
-      if (it.type === 'shield') p.shield = 1;
+      if (it.type === 'shield') p.shield = Math.min(3, p.shield + 1);
       else if (it.type === 'mount') {
         p.mount = this.mountId; this.burst(this.cam + PX, p.y - 50, 24, ['#ff7ac8', '#ffe14d', '#4ab8ff'], 500, 'star');
-      } else p.eff[it.type] = Math.max(p.eff[it.type], dur);
+      } else p.eff[it.type] = Math.max(p.eff[it.type], this.itemDur(it.type));
       if (it.type === 'flight') { p.vy = 0; p.ground = false; }
       this.text(base.name + '！', '#ffffff');
       this.burst(it.x, it.y, 14, ['#ffffff', '#9fe6ff'], 400, 'star');
+    }
+
+    // 坐骑 / 宠物 / 宝物的定时能力
+    updTimers(dt, px) {
+      const p = this.p;
+      for (const tm of this.timers) {
+        if (tm.src === 'mount' && p.mount !== this.mountId) continue;
+        tm.cd -= dt;
+        if (tm.cd > 0) continue;
+        if (tm.kind === 'shield') {
+          if (p.shield < 1) { p.shield = 1; this.text('获得护盾！', '#8fe9ff'); KP.audio.sfx('shield'); }
+          tm.cd = tm.every;
+        } else if (tm.kind === 'magnet') {
+          p.eff.magnet = Math.max(p.eff.magnet, 4); tm.cd = tm.every; this.text('自动磁铁！', '#ff8a9a');
+        } else if (tm.kind === 'fire') {
+          const tgt = this.obs.find(o => !o.dead && o.x > px && o.x < px + 420);
+          if (tgt) {
+            tm.cd = tm.every; this.breath = 0.5; this.breathSrc = tm.src; this.smash(tgt, true); KP.audio.sfx('fire');
+            this.text(tm.src === 'pet' ? '小火龙喷火！' : '坐骑喷火！', '#ffb02e');
+          }
+        }
+      }
     }
 
     // ---------- 主更新 ----------
@@ -408,16 +517,19 @@
         if (up && Math.random() < 0.5) this.parts.push({ x: px - 30, y: p.y - 30, vx: -200, vy: rnd(-40, 40), life: 0.4, max: 0.4, size: rnd(3, 6), col: this.ch.color, type: 'c', g: 0 });
       } else if (fx.flight > 0) {
         const ty = 300 + Math.sin(this.time * 2.5) * 40;
-        p.y += (ty - p.y) * Math.min(1, dt * 3); p.vy = 0; p.ground = false; p.sliding = false;
+        p.y += (ty - p.y) * Math.min(1, dt * 3); p.vy = 0; p.ground = false; p.sliding = false; p.gliding = false;
         if (Math.random() < 0.6) this.parts.push({ x: px - 20, y: p.y - 30 + rnd(-10, 10), vx: -300, vy: 0, life: 0.5, max: 0.5, size: rnd(3, 6), col: '#ffffff', type: 'star', g: 0 });
       } else {
         const prevY = p.y, wasGround = p.ground;
-        p.vy += GRAV * dt;
-        if (p.mount === 'unicorn' && this.jumpHeld && p.vy > 0 && !p.ground) {
-          p.vy = Math.min(p.vy, 150);
-          const rb = ['#ff5a6a', '#ffb03a', '#ffe14d', '#5ee07a', '#4ab8ff', '#a56bff'];
-          this.parts.push({ x: px - 40, y: p.y - 40 + rnd(-8, 8), vx: -100, vy: 0, life: 0.5, max: 0.5, size: 6, col: rb[Math.random() * 6 | 0], type: 'c', g: 0 });
-        }
+        p.vy += GRAV * (this.M.lowGrav ? 0.9 : 1) * dt;
+        // 滑翔：空中下落时按住跳跃，每段最长 1.2 秒
+        if (!p.ground && this.jumpHeld && p.vy > 0 && !p.glideLock && (p.gliding || p.glidesUsed < this.maxGlides)) {
+          if (!p.gliding) { p.gliding = true; p.glidesUsed++; p.glideT = 1.2; }
+          p.glideT -= dt;
+          p.vy = Math.min(p.vy, 140);
+          if (p.glideT <= 0) { p.gliding = false; p.glideLock = true; }
+          if (Math.random() < 0.4) this.parts.push({ x: px - 30, y: p.y - 150 + rnd(-6, 6), vx: -120, vy: 0, life: 0.5, max: 0.5, size: 4, col: this.ch.color, type: 'c', g: 0 });
+        } else if (p.gliding) { p.gliding = false; }
         p.y += p.vy * dt; p.ground = false;
         if (p.vy >= 0) {
           for (const q of this.plats) {
@@ -429,7 +541,7 @@
             if (!over || solid) { p.y = G; p.vy = 0; p.ground = true; }
           }
         }
-        if (p.ground && !wasGround) { p.jumps = 0; p.spin = 0; this.puff(PX, p.y, 5); }
+        if (p.ground && !wasGround) { p.jumps = 0; p.spin = 0; p.glidesUsed = 0; p.gliding = false; this.puff(PX, p.y, 5); }
         p.slideT -= dt;
         p.sliding = p.ground && (this.slideHeld || p.slideT > 0);
         if (p.y > G + 170) this.fallPit();
@@ -439,7 +551,7 @@
 
       // 障碍
       const hb = this.hitbox();
-      const smashing = dashing || giant || fx.flight > 0;
+      const smashing = dashing || giant || fx.flight > 0 || (this.fly && this.skillOn('flight'));
       for (const o of this.obs) {
         if (o.dead) continue;
         if (o.type === 'bird') { o.x -= o.vx * dt; o.y = o.by + Math.sin(this.time * 4 + o.ph) * o.amp; }
@@ -451,42 +563,55 @@
           else { this.hurt(o); if (p.dead) return; }
         }
       }
-      if (this.charId === 'mengmeng' && p.skill > 0)
+      if (this.skillOn('starify'))
         for (const o of this.obs) if (!o.dead && o.x < this.cam + W + 100) this.starify(o);
-
-      // 机甲飞龙自动喷火
-      if (p.mount === 'dragon') {
-        p.fireCd -= dt;
-        if (p.fireCd <= 0) {
-          const tgt = this.obs.find(o => !o.dead && o.x > px && o.x < px + 420);
-          if (tgt) {
-            p.fireCd = 8; this.breath = 0.5; this.smash(tgt, true); KP.audio.sfx('fire');
-            this.text('飞龙喷火！', '#4ff0c8');
-          }
-        }
+      if (this.skillOn('coinRain')) {
+        this.rainT -= dt;
+        while (this.rainT <= 0) { this.rainT += 0.07; this.coinA.push({ x: this.cam + rnd(PX + 60, W + 200), y: -20, vy: rnd(380, 560) }); }
       }
+
+      this.updTimers(dt, px);
       if (this.breath > 0) {
         this.breath -= dt;
-        for (let i = 0; i < 4; i++) this.parts.push({ x: px + 70, y: p.y - 85, vx: rnd(600, 900), vy: rnd(-90, 90), life: 0.35, max: 0.35, size: rnd(8, 14), col: ['#ff3d17', '#ffb02e', '#fff2a0'][i % 3], type: 'c', g: -100 });
+        const bx = this.breathSrc === 'pet' ? this.cam + p.petX + 16 : px + 70;
+        const by = this.breathSrc === 'pet' ? p.petY : p.y - 85;
+        for (let i = 0; i < 4; i++) this.parts.push({ x: bx, y: by, vx: rnd(600, 900), vy: rnd(-90, 90), life: 0.35, max: 0.35, size: rnd(8, 14), col: ['#ff3d17', '#ffb02e', '#fff2a0'][i % 3], type: 'c', g: -100 });
       }
 
-      // 金币
-      const magnet = fx.magnet > 0 || (this.charId === 'mengmeng' && p.skill > 0);
+      // 宠物跟随
+      const k = p.giantK;
+      const ptx = PX - 70 * k, pty = (this.isFlying() ? p.y - 90 : p.y - 150 * k) + (p.mount && !this.isFlying() ? -30 : 0);
+      p.petX += (ptx - p.petX) * Math.min(1, dt * 5); p.petY += (pty - p.petY) * Math.min(1, dt * 4);
+
+      // 金币 / 钻石
+      const storm = this.skillOn('magnetStorm');
+      const magnet = fx.magnet > 0 || storm || this.skillOn('starify');
+      const range = storm ? 1400 : 460;
       const hcx = hb.x + hb.w / 2, hcy = hb.y + hb.h / 2;
-      const coinMul = (fx.double > 0 ? 2 : 1) * (this.charId === 'xiaoyan' && p.skill > 0 ? 2 : 1);
+      const coinMul = (fx.double > 0 ? 2 : 1) * (this.skillOn('giant') || this.skillOn('coinRain') ? 2 : 1);
+      const beeX = this.cam + p.petX, beeY = p.petY;
       for (const cn of this.coinA) {
         if (cn.taken) continue;
+        if (cn.vy) { cn.y += cn.vy * dt; if (cn.y > G - 30) { cn.y = G - 30; cn.vy = 0; } }
         const ddx = hcx - cn.x, ddy = hcy - cn.y;
-        if (magnet && !cn.mag && Math.abs(ddx) < 460 && Math.abs(ddy) < 420) cn.mag = true;
+        if (!cn.mag) {
+          if (magnet && Math.abs(ddx) < range && Math.abs(ddy) < 420) cn.mag = true;
+          else if (this.M.bee && Math.hypot(beeX - cn.x, beeY - cn.y) < 150) cn.mag = true;
+        }
         if (cn.mag) {
           const L = Math.hypot(ddx, ddy) || 1, v = 900 + this.speed;
-          cn.x += ddx / L * v * dt; cn.y += ddy / L * v * dt;
+          cn.x += ddx / L * v * dt; cn.y += ddy / L * v * dt; cn.vy = 0;
         }
         if (Math.abs(ddx) < hb.w / 2 + 16 && Math.abs(ddy) < hb.h / 2 + 16) {
           cn.taken = true;
+          if (cn.kind === 'gem') {
+            this.gems++; KP.audio.sfx('item'); this.text('钻石 +1', '#9ff0ff');
+            this.burst(cn.x, cn.y, 12, ['#9ff0ff', '#ffffff'], 400, 'star');
+            continue;
+          }
           const v = (cn.kind === 'star' ? 2 : 1) * coinMul;
           this.coins += v; this.score += 10 * v * this.mult();
-          p.energy = Math.min(100, p.energy + 1.6 * v);
+          p.energy = Math.min(100, p.energy + 1.6 * v * (1 + this.M.energyPct / 100));
           p.combo++; p.comboT = 0.5;
           KP.audio.sfx('coin', p.combo);
           this.parts.push({ x: cn.x, y: cn.y, vx: 0, vy: -60, life: 0.3, max: 0.3, size: 14, col: '#fff6c4', type: 'ring', g: 0 });
@@ -498,7 +623,6 @@
         if (Math.abs(hcx - it.x) < hb.w / 2 + 26 && Math.abs(hcy - it.y) < hb.h / 2 + 26) this.collectItem(it);
       }
 
-      // 角色专属粒子
       this.charParticles(dt, px);
       if (dashing) {
         this.trailT -= dt;
@@ -515,23 +639,25 @@
       this.pits = this.pits.filter(o => o.x + o.w > cut);
       this.plats = this.plats.filter(o => o.x + o.w > cut);
 
-      // 竞速
       if (this.racers) this.updRace(dt);
     }
 
     charParticles(dt, px) {
-      const p = this.p, id = this.charId, k = p.giantK;
+      const p = this.p, id = this.charId, k = p.giantK, col = this.ch.color;
       if (id === 'xiaoyan' && Math.random() < (p.skill > 0 ? 1 : 0.35)) {
         this.parts.push({ x: px - 5 * k + rnd(-10, 10), y: p.y - 115 * k + rnd(-10, 10), vx: rnd(-140, -60), vy: rnd(-120, -40), life: 0.5, max: 0.5, size: rnd(3, 6) * k, col: ['#ff3d17', '#ffb02e', '#ffe14d'][Math.random() * 3 | 0], type: 'c', g: -50 });
       }
-      if (id === 'mengmeng' && Math.random() < (p.skill > 0 ? 0.9 : 0.25)) {
-        this.parts.push({ x: px + rnd(-30, 30), y: p.y - rnd(20, 110), vx: rnd(-160, -60), vy: rnd(-30, 30), life: 0.7, max: 0.7, size: rnd(4, 8), col: ['#ff8ad8', '#ffe14d', '#c99bff'][Math.random() * 3 | 0], type: 'star', g: 0 });
+      if ((id === 'mengmeng' || id === 'luna' || id === 'huahua') && Math.random() < (p.skill > 0 ? 0.9 : 0.25)) {
+        this.parts.push({ x: px + rnd(-30, 30), y: p.y - rnd(20, 110), vx: rnd(-160, -60), vy: rnd(-30, 30), life: 0.7, max: 0.7, size: rnd(4, 8), col: [col, '#ffe14d', '#ffffff'][Math.random() * 3 | 0], type: 'star', g: 0 });
       }
-      if (id === 'tiequan' && (p.shield || p.skill > 0) && Math.random() < 0.4) {
+      if (p.shield > 0 && Math.random() < 0.25) {
         const a = rnd(0, Math.PI * 2);
         this.parts.push({ x: px + Math.cos(a) * 70, y: p.y - 60 + Math.sin(a) * 70, vx: 0, vy: 0, life: 0.15, max: 0.15, size: 2, col: '#9ffcff', type: 'bolt', g: 0, a });
       }
-      if (id === 'afei' && this.isDashing() && Math.random() < 0.8) {
+      if (p.skill > 0 && Math.random() < 0.6) {
+        this.parts.push({ x: px + rnd(-40, 40), y: p.y - rnd(10, 120) * k, vx: rnd(-200, -80), vy: rnd(-60, 20), life: 0.5, max: 0.5, size: rnd(3, 7), col, type: 'star', g: 0 });
+      }
+      if (this.isDashing() && Math.random() < 0.8) {
         this.parts.push({ x: px + rnd(-20, 40), y: p.y - rnd(10, 110), vx: -900, vy: 0, life: 0.25, max: 0.25, size: rnd(20, 60), col: 'rgba(255,255,255,.8)', type: 'line', g: 0 });
       }
     }
@@ -555,6 +681,7 @@
         this.finished = true; this.finishT = 0;
         this.rank = this.finishOrder.length + 1;
         this.score += [3000, 1500, 800, 300][this.rank - 1] * this.mult();
+        this.gems += [5, 3, 1, 0][this.rank - 1];
         KP.audio.sfx('win'); KP.audio.stopMusic();
         this.bigText(this.rank === 1 ? '冠军！' : '第 ' + this.rank + ' 名', '#ffe14d');
         this.p.inv = 99;
@@ -573,8 +700,11 @@
 
     end() {
       this.ended = true; this.running = false; KP.audio.stopMusic();
+      const dist = Math.floor(this.dist / MPX);
       const res = {
-        mode: this.mode, score: Math.floor(this.score), dist: Math.floor(this.dist / MPX), coins: this.coins,
+        mode: this.mode, score: Math.floor(this.score), dist, coins: this.coins,
+        coinsEarned: Math.floor(this.coins * (1 + this.M.coinPct / 100)),
+        diaEarned: this.gems + Math.floor(dist / 500), gems: this.gems,
         smashed: this.smashed, rank: this.racers ? (this.finished ? this.rank : 0) : null
       };
       if (this.onEnd) this.onEnd(res);
@@ -622,7 +752,10 @@
       A.drawGround(c, this.theme, cam, this.pits, time);
       for (const q of this.plats) if (q.x - cam < W + 20 && q.x + q.w - cam > -20) A.drawPlat(c, q.x - cam, q.y, q.w, this.theme);
       if (this.racers) { const fx = RACE_LEN * MPX - cam + PX; if (fx > -200 && fx < W + 200) A.drawFinish(c, fx); }
-      for (const cn of this.coinA) { const x = cn.x - cam; if (x > -30 && x < W + 30) A.drawCoin(c, x, cn.y, time, cn.kind); }
+      for (const cn of this.coinA) {
+        const x = cn.x - cam; if (x < -30 || x > W + 30) continue;
+        if (cn.kind === 'gem') A.drawGem(c, x, cn.y, time); else A.drawCoin(c, x, cn.y, time, cn.kind);
+      }
       for (const it of this.items) { const x = it.x - cam; if (x > -40 && x < W + 40) A.drawItem(c, it.type, x, it.y, time); }
       for (const o of this.obs) { if (o.dead) continue; const x = o.x - cam; if (x < W + 40 && x + o.w > -40) A.drawObs(c, o, x, time, this.theme); }
       if (this.racers) this.drawRacers(c);
@@ -634,14 +767,14 @@
       if (this.shock > 0) {
         const r = this.shock * 1800;
         c.save(); c.globalAlpha = Math.max(0, 1 - this.shock / 0.7);
-        c.lineWidth = 18; c.strokeStyle = '#9ffcff'; c.shadowColor = '#36a8ff'; c.shadowBlur = 30;
+        c.lineWidth = 18; c.strokeStyle = '#9ffcff'; c.shadowColor = this.ch.color; c.shadowBlur = 30;
         c.beginPath(); c.arc(PX, p.y - 60, r, 0, Math.PI * 2); c.stroke(); c.restore();
       }
       c.restore();
       if (this.flash > 0) { c.save(); c.globalAlpha = Math.min(0.6, this.flash); c.fillStyle = this.flashCol; c.fillRect(0, 0, W, H); c.restore(); }
-      if (this.isGiant() || (this.charId === 'mengmeng' && p.skill > 0) || this.isDashing()) {
-        const col = this.isDashing() ? 'rgba(255,80,80,' : this.isGiant() ? 'rgba(255,120,20,' : 'rgba(255,110,200,';
-        c.fillStyle = A.rg(c, W / 2, H / 2, H * 0.45, W * 0.7, [col + '0)', col + '.35)']); c.fillRect(0, 0, W, H);
+      if (p.skill > 0.3 || this.isDashing() || this.isGiant()) {
+        const hx = this.isDashing() && p.skill <= 0 ? '#ff5050' : this.isGiant() && p.skill <= 0 ? '#ff7814' : this.ch.color;
+        c.fillStyle = A.rg(c, W / 2, H / 2, H * 0.45, W * 0.7, ['rgba(0,0,0,0)', A.mix(hx, hx, 0) + '59']); c.fillRect(0, 0, W, H);
       }
       this.drawTexts(c);
       this.drawHUD(c);
@@ -655,7 +788,7 @@
         const pose = r.stumble > 0 ? 'fall' : 'run';
         A.drawChar(c, r.id, x, G - 4, { pose, t: r.t, time, alpha: 0.6, scale: 0.85, rot: r.stumble > 0 ? -0.5 : 0 });
         c.font = '700 16px "PingFang SC",sans-serif'; c.textAlign = 'center';
-        c.fillStyle = 'rgba(20,10,40,.6)'; A.rr(c, x - 30, G - 140, 60, 22, 11); c.fill();
+        c.fillStyle = 'rgba(20,10,40,.6)'; A.rr(c, x - 34, G - 140, 68, 22, 11); c.fill();
         c.fillStyle = '#fff'; c.fillText(r.name, x, G - 123);
       }
     }
@@ -671,15 +804,13 @@
       else if (this.finished && this.speed < 50) pose = 'win';
       else if (flying) { pose = 'fly'; rot = clamp(p.vy / 1800, -0.3, 0.3); }
       else if (p.sliding) pose = 'slide';
-      else if (!p.ground) { pose = p.vy < 0 ? 'jump' : 'fall'; if (p.spin > 0) rot = (1 - p.spin) * Math.PI * 2; }
+      else if (!p.ground) { pose = p.gliding ? 'fall' : p.vy < 0 ? 'jump' : 'fall'; if (p.spin > 0) rot = (1 - p.spin) * Math.PI * 2; }
 
-      // 气场
       if (this.isGiant()) {
         c.save(); c.globalAlpha = 0.5 + Math.sin(time * 20) * 0.15;
         c.fillStyle = A.rg(c, x, y - 70 * k, 10, 110 * k, ['rgba(255,200,60,.7)', 'rgba(255,80,20,.3)', 'rgba(255,60,0,0)']);
         c.beginPath(); c.arc(x, y - 70 * k, 110 * k, 0, Math.PI * 2); c.fill(); c.restore();
       }
-      // 疾风残影
       for (const tr of this.trail) {
         const age = 1 - tr.life / 0.25;
         c.save(); c.globalAlpha = 0.35 * (1 - age);
@@ -688,6 +819,7 @@
       }
 
       c.save(); c.translate(x, y); c.scale(k, k); c.globalAlpha = alpha;
+      let topY = -110;
       if (p.mount && !p.dead) {
         const mo = { t: p.runT, time, slide: p.sliding, air: !p.ground || flying };
         if (flying) c.rotate(rot * 0.6);
@@ -696,23 +828,37 @@
         const s = A.saddle(p.mount, mo);
         if (s.stand) A.drawChar(c, this.charId, s.x, s.y, { pose: p.sliding ? 'slide' : (pose === 'win' ? 'win' : 'stand'), t: p.runT, time });
         else A.drawChar(c, this.charId, s.x, s.y + 32, { pose: 'ride', t: p.runT, time, rot: p.sliding ? -0.9 : 0 });
+        topY = s.y - (s.stand ? 110 : 80);
       } else {
         A.drawChar(c, this.charId, 0, 0, { pose, t: p.runT, time, rot });
       }
+      // 滑翔伞
+      if (p.gliding && !p.dead) {
+        const cy = topY - 40, col = this.ch.color;
+        c.strokeStyle = 'rgba(255,255,255,.8)'; c.lineWidth = 1.5;
+        c.beginPath(); c.moveTo(-40, cy + 6); c.lineTo(0, topY + 40); c.lineTo(40, cy + 6); c.stroke();
+        c.beginPath(); c.moveTo(-46, cy + 8); c.quadraticCurveTo(0, cy - 40, 46, cy + 8);
+        for (let i = 0; i < 4; i++) c.quadraticCurveTo(46 - i * 23 - 11.5, cy + 2, 46 - (i + 1) * 23, cy + 8);
+        c.closePath(); A.fs(c, A.lg(c, 0, cy - 30, 0, cy + 8, [A.light(col, 0.4), col]));
+      }
       c.restore();
+
+      if (this.petId && !p.dead) A.drawPet(c, this.petId, p.petX, p.petY, time);
 
       if (p.dead) return;
       const hb = this.hitbox(), cx = hb.x - this.cam + hb.w / 2, cy = hb.y + hb.h / 2;
-      if (p.shield) {
+      if (p.shield > 0) {
         const r = Math.max(hb.w, hb.h) * 0.62 + 10;
         c.save();
         c.fillStyle = A.rg(c, cx, cy, r * 0.5, r, ['rgba(140,230,255,0)', 'rgba(140,230,255,.35)']);
         c.beginPath(); c.arc(cx, cy, r, 0, Math.PI * 2); c.fill();
         c.lineWidth = 3; c.strokeStyle = 'rgba(200,250,255,.8)'; c.stroke();
-        c.beginPath(); c.arc(cx, cy, r - 6, -2.4 + time, -1.6 + time); c.strokeStyle = 'rgba(255,255,255,.9)'; c.lineWidth = 4; c.stroke();
+        for (let i = 0; i < p.shield; i++) {
+          c.beginPath(); c.arc(cx, cy, r - 6 - i * 6, -2.4 + time * (1 + i * 0.4), -1.6 + time * (1 + i * 0.4)); c.strokeStyle = 'rgba(255,255,255,.9)'; c.lineWidth = 4; c.stroke();
+        }
         c.restore();
       }
-      if (p.eff.magnet > 0 || (this.charId === 'mengmeng' && p.skill > 0)) {
+      if (p.eff.magnet > 0 || this.skillOn('magnetStorm') || this.skillOn('starify')) {
         c.save(); c.strokeStyle = 'rgba(255,90,110,.5)'; c.lineWidth = 3; c.setLineDash([10, 12]);
         c.lineDashOffset = -time * 60;
         c.beginPath(); c.arc(cx, cy, 90 + Math.sin(time * 6) * 6, 0, Math.PI * 2); c.stroke(); c.restore();
@@ -768,33 +914,34 @@
         c.fillStyle = col || '#fff'; c.fillText(s, x, y);
       };
       c.save();
-      c.fillStyle = 'rgba(30,14,60,.45)'; A.rr(c, 20, 18, 300, 106, 22); c.fill();
+      c.fillStyle = 'rgba(30,14,60,.45)'; A.rr(c, 20, 18, 330, 106, 22); c.fill();
       txt(String(Math.floor(this.score)), 40, 52, 40, '#fff');
       txt(Math.floor(this.dist / MPX) + ' 米', 40, 98, 24, '#bfe8ff');
-      A.drawCoin(c, 196, 98, 0); txt(String(this.coins), 216, 98, 24, '#ffe14d');
+      A.drawCoin(c, 172, 98, 0); txt(String(this.coins), 192, 98, 24, '#ffe14d');
+      c.save(); A.drawGemShape(c, 262, 97, 11); c.restore(); txt(String(this.gems), 280, 98, 24, '#9ff0ff');
       // 状态图标
       const icons = [];
-      for (const k of ['magnet', 'dash', 'giant', 'double', 'flight']) if (p.eff[k] > 0) icons.push([k, p.eff[k] / ((k === 'dash' && this.charId === 'afei') || (k === 'magnet' && this.charId === 'mengmeng') ? KP.ITEMS[k].dur * 1.5 : KP.ITEMS[k].dur)]);
-      if (p.shield) icons.push(['shield', 1]);
-      icons.forEach(([k, f], i) => {
-        const x = 360 + i * 64, y = 58;
+      for (const k of ['magnet', 'dash', 'giant', 'double', 'flight']) if (p.eff[k] > 0) icons.push([k, p.eff[k] / Math.max(this.itemDur(k), p.eff[k])]);
+      if (p.shield) icons.push(['shield', 1, p.shield]);
+      icons.forEach(([k, f, n], i) => {
+        const x = 390 + i * 64, y = 58;
         c.beginPath(); c.arc(x, y, 27, 0, Math.PI * 2); c.fillStyle = 'rgba(30,14,60,.45)'; c.fill();
         c.beginPath(); c.arc(x, y, 27, -Math.PI / 2, -Math.PI / 2 + Math.PI * 2 * clamp(f, 0, 1));
         c.lineWidth = 5; c.strokeStyle = '#ffe14d'; c.stroke();
         c.save(); c.translate(x, y); c.scale(0.8, 0.8); A.drawItemIcon(c, k, time); c.restore();
+        if (n > 1) txt('×' + n, x + 14, y + 20, 16, '#fff');
       });
-      // 被动状态
+      // 跳跃 / 滑翔段数 + 坐骑
       let ix = 34;
-      if (this.charId === 'xiaoyan') { c.globalAlpha = p.revive ? 1 : 0.3; A.flame(c, ix, 158, ix, 136, 7, '#ff3d17', '#ffd34d'); c.globalAlpha = 1; txt(p.revive ? '复活×1' : '复活×0', ix + 16, 150, 18, '#ffd34d'); ix += 110; }
-      if (this.mountId) {
-        const m = KP.MOUNTS.find(m => m.id === this.mountId);
-        txt(p.mount ? '🐎 ' + m.name : '坐骑已失去', ix, 150, 18, p.mount ? '#c8ffe8' : '#ff9a9a');
-        if (p.mount === 'dragon') {
-          const f = clamp(1 - p.fireCd / 8, 0, 1);
-          c.fillStyle = 'rgba(30,14,60,.5)'; A.rr(c, ix, 166, 110, 10, 5); c.fill();
-          c.fillStyle = f >= 1 ? '#4ff0c8' : '#2a9a8a'; A.rr(c, ix, 166, 110 * f, 10, 5); c.fill();
-        }
-      }
+      const pip = (n, used, col, label) => {
+        txt(label, ix, 150, 16, '#fff'); ix += 22;
+        for (let i = 0; i < n; i++) { c.beginPath(); c.arc(ix + i * 13, 150, 5, 0, Math.PI * 2); c.fillStyle = i < n - used ? col : 'rgba(255,255,255,.25)'; c.fill(); }
+        ix += n * 13 + 12;
+      };
+      pip(this.maxJumps, this.fly ? 0 : p.jumps, '#ffe14d', '跳');
+      if (this.maxGlides) pip(this.maxGlides, p.glidesUsed, '#9ff0ff', '翔');
+      if (p.revive > 0) { txt('复活×' + p.revive, ix, 150, 16, '#ffb02e'); ix += 70; }
+      if (this.mountId) txt(p.mount ? this.mountInfo.name : '坐骑已失去', ix, 150, 16, p.mount ? '#c8ffe8' : '#ff9a9a');
       // 竞速进度
       if (this.racers) {
         const bx = 440, bw = 520, by = 106;
@@ -803,7 +950,7 @@
         const len = RACE_LEN * MPX;
         for (const r of this.racers) {
           const f = clamp(r.dist / len, 0, 1);
-          c.beginPath(); c.arc(bx + f * bw, by, 8, 0, Math.PI * 2); c.fillStyle = charOf(r.id).color; c.fill(); c.lineWidth = 2; c.strokeStyle = '#fff'; c.stroke();
+          c.beginPath(); c.arc(bx + f * bw, by, 8, 0, Math.PI * 2); c.fillStyle = KP.charOf(r.id).color; c.fill(); c.lineWidth = 2; c.strokeStyle = '#fff'; c.stroke();
         }
         const f = clamp(this.dist / len, 0, 1);
         c.beginPath(); c.arc(bx + f * bw, by, 12, 0, Math.PI * 2); c.fillStyle = this.ch.color; c.fill(); c.lineWidth = 3; c.strokeStyle = '#ffe14d'; c.stroke();
@@ -812,12 +959,12 @@
         txt('剩余 ' + Math.max(0, Math.ceil(RACE_LEN - this.dist / MPX)) + ' 米', W - 220, 96, 22, '#fff', 'center');
       }
       if (this.mode === 'speed') txt('分数×2', W - 190, 56, 30, '#ffe14d', 'center');
-      // 操作提示
       if (this.hint > 0) {
         c.globalAlpha = Math.min(1, this.hint);
-        const msg = this.fly ? '按住 空格 / 右侧屏幕 上升，松开下降 · E 释放技能' : '空格/↑ 跳跃（可二段跳） · ↓/S 下滑 · E 释放技能';
-        c.fillStyle = 'rgba(30,14,60,.55)'; A.rr(c, W / 2 - 360, H - 64, 720, 44, 22); c.fill();
-        txt(msg, W / 2, H - 42, 22, '#fff', 'center');
+        const msg = this.fly ? '按住 空格 / 右侧屏幕 上升，松开下降 · E 释放技能'
+          : '空格 跳跃（可' + this.maxJumps + '段跳）' + (this.maxGlides ? ' · 下落时按住空格滑翔' : '') + ' · ↓ 下滑 · E 技能';
+        c.fillStyle = 'rgba(30,14,60,.55)'; A.rr(c, W / 2 - 380, H - 64, 760, 44, 22); c.fill();
+        txt(msg, W / 2, H - 42, 21, '#fff', 'center');
         c.globalAlpha = 1;
       }
       c.restore();

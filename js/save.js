@@ -12,9 +12,9 @@
       mode: 'classic', best: {}, muted: false,
       sign: { last: '', streak: 0 }, freeDraw: '', pity: 0
     };
-    KP.CHARS.forEach(c => { if (c.free) p.chars[c.id] = true; });
-    KP.MOUNTS.forEach(c => { if (c.free) p.mounts[c.id] = true; });
-    KP.PETS.forEach(c => { if (c.free) p.pets[c.id] = true; });
+    KP.CHARS.forEach(c => { if (c.free) p.chars[c.id] = 1; });
+    KP.MOUNTS.forEach(c => { if (c.free) p.mounts[c.id] = 1; });
+    KP.PETS.forEach(c => { if (c.free) p.pets[c.id] = 1; });
     return p;
   }
 
@@ -30,7 +30,10 @@
   } else {
     const f = fresh();
     for (const k in f) if (P[k] == null) P[k] = f[k];
-    for (const k of ['chars', 'mounts', 'pets']) for (const id in f[k]) P[k][id] = true;
+    for (const k of ['chars', 'mounts', 'pets']) {
+      for (const id in f[k]) if (!P[k][id]) P[k][id] = 1;
+      for (const id in P[k]) if (P[k][id] === true) P[k][id] = 1; // 旧存档：true → 1 级
+    }
   }
 
   const S = KP.save = {
@@ -53,8 +56,21 @@
     buy(kind, item) {
       if (S.owns(kind, item.id)) return false;
       if (!S.pay(S.priceOf(kind, item))) return false;
-      if (kind === 'treasures') P.treasures[item.id] = 1; else P[kind][item.id] = true;
+      P[kind][item.id] = 1;
       S.write(); return true;
+    },
+    // 角色 / 坐骑 / 宠物 等级
+    level(kind, id) { return P[kind][id] || 0; },
+    levelCost(kind, id) {
+      const lv = P[kind][id] || 0;
+      if (!lv || lv >= KP.LEVEL_MAX) return null;
+      const item = { chars: KP.charOf, mounts: KP.mountOf, pets: KP.petOf }[kind](id);
+      return KP.LEVEL_COST[item.rarity] * lv;
+    },
+    levelUp(kind, id) {
+      const c = S.levelCost(kind, id);
+      if (c == null || P.coins < c) return false;
+      P.coins -= c; P[kind][id]++; S.write(); return true;
     },
     upgradeCost(id) { const lv = P.treasures[id] || 0; return lv >= 5 ? null : KP.TREASURE_UP[lv]; },
     upgrade(id) {
@@ -153,7 +169,8 @@
       else { r.dupe = KP.RARITY[r.rarity].dupe; P.coins += r.dupe; }
       return r;
     }
-    if (!P[r.kind][id]) { P[r.kind][id] = true; r.isNew = true; }
+    if (!P[r.kind][id]) { P[r.kind][id] = 1; r.isNew = true; }
+    else if (P[r.kind][id] < KP.LEVEL_MAX) { P[r.kind][id]++; r.levelUp = P[r.kind][id]; }
     else { r.dupe = KP.RARITY[r.rarity].dupe; P.coins += r.dupe; }
     return r;
   }

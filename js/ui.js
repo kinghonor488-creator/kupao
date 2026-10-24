@@ -80,11 +80,12 @@
   function buildHall() {
     refreshCurrency();
     const e = P().equip, ch = KP.charOf(e.char), mt = KP.mountOf(e.mount), pt = KP.petOf(e.pet);
-    $('#iChar').innerHTML = `<h4 class="fun">${rarHtml(ch.rarity)} ${ch.name}</h4>
-      <div>技能：<span class="hl">${ch.skill.name}</span></div><div>跳跃 <span class="hl">${ch.jumps}</span> 段 · 滑翔 <span class="hl">${ch.glides}</span> 段</div><div>${ch.passive}</div>`;
-    $('#iMount').innerHTML = `<h4 class="fun">${rarHtml(mt.rarity)} ${mt.name}</h4>
-      <div>分数 <span class="hl">+${Math.round(mt.bonus * 100)}%</span></div><div>${KP.MOUNT_ABIL[mt.ability]}</div>`;
-    $('#iPet').innerHTML = `<h4 class="fun">${rarHtml(pt.rarity)} ${pt.name}</h4><div>${pt.desc}</div>`;
+    const lvC = S.level('chars', e.char), lvM = S.level('mounts', e.mount), lvP = S.level('pets', e.pet);
+    $('#iChar').innerHTML = `<h4 class="fun">${rarHtml(ch.rarity)} ${ch.name} <span class="hl">Lv${lvC}</span></h4>
+      <div>技能：<span class="hl">${ch.skill.name}</span></div><div>跳跃 <span class="hl">${ch.jumps}</span> 段 · 滑翔 <span class="hl">${ch.glides}</span> 段</div><div>道具持续 <span class="hl">+${KP.levelItemPct(lvC)}%</span> · ${ch.passive}</div>`;
+    $('#iMount').innerHTML = `<h4 class="fun">${rarHtml(mt.rarity)} ${mt.name}${mt.id === 'none' ? '' : ` <span class="hl">Lv${lvM}</span>`}</h4>
+      <div>分数 <span class="hl">+${Math.round(mt.bonus * 100)}%</span>${mt.id === 'none' ? '' : ` · 道具持续 <span class="hl">+${KP.levelItemPct(lvM)}%</span>`}</div><div>${KP.MOUNT_ABIL[mt.ability]}</div>`;
+    $('#iPet').innerHTML = `<h4 class="fun">${rarHtml(pt.rarity)} ${pt.name}${pt.id === 'none' ? '' : ` <span class="hl">Lv${lvP}</span>`}</h4><div>${KP.petDesc(pt, lvP)}</div>`;
     $('#iTre').innerHTML = `<h4 class="fun">宝物</h4><div class="tslots">${e.treasures.map(id => {
       if (!id) return '<div class="tslot"></div>';
       const t = KP.treasureOf(id); return `<div class="tslot on">${t.icon}<small>Lv${P().treasures[id]}</small></div>`;
@@ -188,7 +189,10 @@
       if (kind === 'treasures') {
         const ic = document.createElement('div'); ic.className = 'ticon'; ic.textContent = item.icon; d.prepend(ic);
         if (owned) d.insertAdjacentHTML('beforeend', `<span class="lv">Lv${P().treasures[item.id]}</span>`);
-      } else d.prepend(mini(132, 92, c => drawThumb(c, kind, item, 132, 92, 1)));
+      } else {
+        d.prepend(mini(132, 92, c => drawThumb(c, kind, item, 132, 92, 1)));
+        if (owned && item.id !== 'none') d.insertAdjacentHTML('beforeend', `<span class="lv">Lv${S.level(kind, item.id)}</span>`);
+      }
       grid.appendChild(d);
     }
   }
@@ -212,17 +216,27 @@
     let sub = '', desc = '';
     if (kind === 'chars') {
       sub = item.title;
-      stats.push(['跳跃', item.jumps + ' 段'], ['滑翔', item.glides + ' 段'], ['技能', KP.SKILLS[item.skill.type].dur > 1 ? KP.SKILLS[item.skill.type].dur + ' 秒' : '瞬发']);
+      const lv = S.level('chars', item.id);
+      stats.push(['跳跃', item.jumps + ' 段'], ['滑翔', item.glides + ' 段'], ['等级', lv ? lv + '/' + KP.LEVEL_MAX : '—'], ['道具持续', '+' + KP.levelItemPct(lv || 1) + '%']);
       desc = `<div><span class="k">技能 · ${item.skill.name}</span>：${skillText(item)}</div><div><span class="k">天赋</span>：${item.passive}</div>
-        <div style="opacity:.75;margin-top:4px">滑翔：空中下落时按住跳跃键，每段最长 1.2 秒</div>`;
+        <div><span class="k">升级</span>：每升一级，所有道具持续时间 +${KP.LEVEL_ITEM_PCT}%</div>
+        <div style="opacity:.75;margin-top:4px">滑翔：起跳后，下落时按住跳跃键立即滑翔，每段最长 1.2 秒</div>`;
     } else if (kind === 'mounts') {
       sub = item.id === 'none' ? '不骑坐骑' : '被撞时坐骑会替你挡下一次';
-      stats.push(['分数加成', '+' + Math.round(item.bonus * 100) + '%'], ['稀有度', item.rarity]);
-      desc = `<div><span class="k">特殊能力</span>：${KP.MOUNT_ABIL[item.ability]}</div><div style="opacity:.75">坐骑在游戏中被撞掉后，可拾取“坐骑召回”道具重新骑上</div>`;
+      const lv = S.level('mounts', item.id);
+      stats.push(['分数加成', '+' + Math.round(item.bonus * 100) + '%']);
+      if (item.id !== 'none') stats.push(['等级', lv ? lv + '/' + KP.LEVEL_MAX : '—'], ['道具持续', '+' + KP.levelItemPct(lv || 1) + '%']);
+      desc = `<div><span class="k">特殊能力</span>：${KP.MOUNT_ABIL[item.ability]}</div>` +
+        (item.id === 'none' ? '' : `<div><span class="k">升级</span>：每升一级，所有道具持续时间 +${KP.LEVEL_ITEM_PCT}%</div>`) +
+        `<div style="opacity:.75">坐骑在游戏中被撞掉后，可拾取“坐骑召回”道具重新骑上</div>`;
     } else if (kind === 'pets') {
       sub = '跟随你一起奔跑';
-      stats.push(['跳跃', item.jump ? '+' + item.jump : '—'], ['滑翔', item.glide ? '+' + item.glide : '—'], ['稀有度', item.rarity]);
-      desc = `<div><span class="k">宠物能力</span>：${item.desc}</div>`;
+      const lv = S.level('pets', item.id);
+      stats.push(['跳跃', item.jump ? '+' + item.jump : '—'], ['滑翔', item.glide ? '+' + item.glide : '—']);
+      if (item.id !== 'none') stats.push(['等级', lv ? lv + '/' + KP.LEVEL_MAX : '—']);
+      desc = `<div><span class="k">宠物能力</span>：${KP.petDesc(item, lv || 1)}</div>` +
+        (item.id !== 'none' && lv && lv < KP.LEVEL_MAX ? `<div style="opacity:.8">下一级：${KP.petDesc(item, lv + 1)}</div>` : '') +
+        (item.id === 'none' ? '' : '<div style="opacity:.75">每升一级，宠物能力增强 10%</div>');
     } else {
       const lv = P().treasures[item.id] || 0;
       sub = '装备后在每局游戏中生效';
@@ -262,6 +276,13 @@
       addBtn(isEq ? (kind === 'chars' ? '出战中' : '已装备') : (kind === 'chars' ? '出战' : '装备'), 'primary', () => {
         S.equip(kind, item.id); toast('已更换为 ' + item.name); buildGrid(); showDetail();
       }, isEq);
+      if (item.id !== 'none') {
+        const cost = S.levelCost(kind, item.id);
+        addBtn(cost == null ? '已满级' : '升级 🪙 ' + cost, '', () => {
+          if (S.levelUp(kind, item.id)) { KP.audio.sfx('item'); toast(item.name + ' 升到 Lv' + S.level(kind, item.id) + '！'); buildGrid(); showDetail(); }
+          else toast('金币不足');
+        }, cost == null || P().coins < cost);
+      }
     }
     refreshCurrency();
   }
@@ -307,7 +328,7 @@
     $('#hall').classList.add('hidden'); $('#panel').classList.add('hidden'); $('#gacha').classList.remove('hidden');
     const r = KP.GACHA.rates;
     $('#gRates').innerHTML = `<b style="color:#fff">概率</b><br>${rarHtml('SSR')} ${r.SSR}% &nbsp; ${rarHtml('SR')} ${r.SR}% &nbsp; ${rarHtml('R')} ${r.R}% &nbsp; ${rarHtml('N')} ${r.N}%
-      <br>奖池包含角色、坐骑、宠物、宝物和金币。<br>重复获得：角色/坐骑/宠物折算成金币，宝物自动升一级。<br>每 60 抽必出 SSR（当前已 ${P().pity} 抽）。`;
+      <br>奖池包含角色、坐骑、宠物、宝物和金币。<br>重复获得：自动升一级；满级后折算成金币。<br>每 60 抽必出 SSR（当前已 ${P().pity} 抽）。`;
     refreshGacha();
     if (!gBalls) gBalls = Array.from({ length: 26 }, (_, i) => ({ x: 360 + (Math.random() - 0.5) * 300, y: 200 + Math.random() * 120, vx: (Math.random() - 0.5) * 100, vy: 0, c: ['#ff5a8a', '#ffd24a', '#4ab8ff', '#a56bff', '#5ee07a', '#ff8a1f'][i % 6] }));
   }
@@ -415,7 +436,10 @@
     $('#skName').textContent = ch.skill.name;
     $('#btnSkill .core').style.background = `radial-gradient(circle at 35% 30%, #fff8, ${ch.color} 60%)`;
     lastPct = -1;
-    game.start({ mode: P().mode, char: e.char, mount: e.mount, pet: e.pet, tfx: S.treasureFx() });
+    game.start({
+      mode: P().mode, char: e.char, mount: e.mount, pet: e.pet, tfx: S.treasureFx(),
+      levels: { char: S.level('chars', e.char), mount: S.level('mounts', e.mount), pet: S.level('pets', e.pet) }
+    });
   }
   function toHall() {
     state = 'hall'; view = null; game.running = false; KP.audio.stopMusic(); KP.audio.resume();

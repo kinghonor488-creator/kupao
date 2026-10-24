@@ -140,20 +140,37 @@ KP.MOUNTS = [
 
 // 宠物：跟随角色，提供能力；jump/glide 可额外加段数
 KP.PETS = [
-  { id: 'none', name: '无', rarity: 'N', desc: '不携带宠物', free: true },
-  { id: 'bee', name: '金币蜂', rarity: 'N', desc: '自动收集身边的金币', free: true },
-  { id: 'fairy', name: '小精灵', rarity: 'R', desc: '技能充能 +30%' },
-  { id: 'owl', name: '智慧猫头鹰', rarity: 'R', desc: '所有道具持续 +30%' },
-  { id: 'firedrake', name: '小火龙', rarity: 'SR', desc: '每 12 秒喷火摧毁前方障碍' },
-  { id: 'starbaby', name: '星星宝宝', rarity: 'N', desc: '分数 +10%' },
-  { id: 'ghost', name: '小幽灵', rarity: 'R', desc: '每 30 秒获得一层护盾' },
-  { id: 'luckycat', name: '招财猫', rarity: 'SR', desc: '金币 +20%' },
-  { id: 'robot', name: '机械球', rarity: 'R', desc: '每 20 秒开启 4 秒磁铁' },
-  { id: 'penguin', name: '小企鹅', rarity: 'N', desc: '开局冲刺 3 秒' },
-  { id: 'gembunny', name: '钻石兔', rarity: 'SSR', desc: '钻石出现率翻倍，金币 +10%' },
-  { id: 'butterfly', name: '蝴蝶仙子', rarity: 'SR', desc: '滑翔段数 +1（最多 3 段）', glide: 1 },
-  { id: 'frog', name: '跳跳蛙', rarity: 'SSR', desc: '跳跃段数 +1（最多 4 段）', jump: 1 }
+  { id: 'none', name: '无', rarity: 'N', fmt: '不携带宠物', free: true },
+  { id: 'bee', name: '金币蜂', rarity: 'N', fmt: '自动收集身边 {v} 范围内的金币', val: 150, free: true },
+  { id: 'fairy', name: '小精灵', rarity: 'R', fmt: '技能充能 +{v}%', val: 30 },
+  { id: 'owl', name: '智慧猫头鹰', rarity: 'R', fmt: '所有道具持续 +{v}%', val: 30 },
+  { id: 'firedrake', name: '小火龙', rarity: 'SR', fmt: '每 {v} 秒喷火摧毁前方障碍', val: 12, inv: true },
+  { id: 'starbaby', name: '星星宝宝', rarity: 'N', fmt: '分数 +{v}%', val: 10 },
+  { id: 'ghost', name: '小幽灵', rarity: 'R', fmt: '每 {v} 秒获得一层护盾', val: 30, inv: true },
+  { id: 'luckycat', name: '招财猫', rarity: 'SR', fmt: '金币 +{v}%', val: 20 },
+  { id: 'robot', name: '机械球', rarity: 'R', fmt: '每 {v} 秒开启 4 秒磁铁', val: 20, inv: true },
+  { id: 'penguin', name: '小企鹅', rarity: 'N', fmt: '开局冲刺 {v} 秒', val: 3 },
+  { id: 'gembunny', name: '钻石兔', rarity: 'SSR', fmt: '钻石出现率 ×{v}，金币 +10%', val: 2, dec: true },
+  { id: 'butterfly', name: '蝴蝶仙子', rarity: 'SR', fmt: '滑翔段数 +1（最多 3 段），分数 +{v}%', flat: 2, glide: 1 },
+  { id: 'frog', name: '跳跳蛙', rarity: 'SSR', fmt: '跳跃段数 +1（最多 4 段），分数 +{v}%', flat: 2, jump: 1 }
 ];
+
+// 升级：角色、坐骑、宠物最高 10 级；升到下一级花费 = 基础价 × 当前等级
+KP.LEVEL_MAX = 10;
+KP.LEVEL_COST = { N: 400, R: 700, SR: 1100, SSR: 1600 };
+KP.LEVEL_ITEM_PCT = 3; // 角色、坐骑每升一级，道具持续时间 +3%
+KP.levelItemPct = lv => Math.max(0, (lv || 1) - 1) * KP.LEVEL_ITEM_PCT;
+// 宠物能力随等级增强：每级 +10%（冷却类每级缩短）
+KP.petVal = (pet, lv) => {
+  lv = lv || 1;
+  if (pet.flat) return pet.flat * lv;
+  if (pet.val == null) return 0;
+  const m = 1 + (lv - 1) * 0.1;
+  if (pet.inv) return Math.round(pet.val / m * 10) / 10;
+  if (pet.dec) return Math.round(pet.val * m * 10) / 10;
+  return Math.round(pet.val * m);
+};
+KP.petDesc = (pet, lv) => pet.fmt.replace('{v}', KP.petVal(pet, lv));
 
 // 宝物：最多装备 3 件，可升到 5 级；vals 为各等级数值
 KP.TREASURES = [

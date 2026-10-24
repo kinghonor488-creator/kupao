@@ -36,7 +36,7 @@
       const M = {
         coinPct: 0, scorePct: 0, itemPct: 0, dashPct: 0, magnetPct: 0, giantPct: 0, energyPct: 0, itemRate: 0,
         diamondMul: 1, startShield: 0, revive: 0, reviveChance: 0, smashMul: 1, lowGrav: 0, flyScorePct: 0,
-        dashStart: 0, magnetStart: 0, startEnergy: 30, bee: false
+        dashStart: 0, magnetStart: 0, startEnergy: 30, beeR: 0
       };
       const add = o => { for (const k in o) M[k] = (M[k] || 0) + o[k]; };
       const P = PAS[cfg.char]; if (P) { add(P); if (P.smashMul) M.smashMul = 1 + P.smashMul; }
@@ -49,6 +49,9 @@
       if (T.startEnergy) M.startEnergy = Math.max(M.startEnergy, T.startEnergy);
       if (T.diamondPct) M.diamondMul *= 1 + T.diamondPct / 100;
       if (T.guardEvery) timers.push({ kind: 'shield', every: T.guardEvery, cd: T.guardEvery, src: 'treasure' });
+      const lv = cfg.levels || {};
+      M.itemPct += KP.levelItemPct(lv.char);
+      if (cfg.mount && cfg.mount !== 'none') M.itemPct += KP.levelItemPct(lv.mount);
       const mt = KP.mountOf(cfg.mount);
       switch (mt.ability) {
         case 'coin': M.coinPct += 15; break;
@@ -60,17 +63,19 @@
         case 'magnet': timers.push({ kind: 'magnet', every: 15, cd: 8, src: 'mount' }); break;
         case 'fire': timers.push({ kind: 'fire', every: 8, cd: 3, src: 'mount' }); break;
       }
+      const pv = KP.petVal(KP.petOf(cfg.pet), lv.pet);
       switch (cfg.pet) {
-        case 'bee': M.bee = true; break;
-        case 'fairy': M.energyPct += 30; break;
-        case 'owl': M.itemPct += 30; break;
-        case 'firedrake': timers.push({ kind: 'fire', every: 12, cd: 5, src: 'pet' }); break;
-        case 'starbaby': M.scorePct += 10; break;
-        case 'ghost': timers.push({ kind: 'shield', every: 30, cd: 30, src: 'pet' }); break;
-        case 'luckycat': M.coinPct += 20; break;
-        case 'robot': timers.push({ kind: 'magnet', every: 20, cd: 10, src: 'pet' }); break;
-        case 'penguin': M.dashStart = Math.max(M.dashStart, 3); break;
-        case 'gembunny': M.diamondMul *= 2; M.coinPct += 10; break;
+        case 'bee': M.beeR = pv; break;
+        case 'fairy': M.energyPct += pv; break;
+        case 'owl': M.itemPct += pv; break;
+        case 'firedrake': timers.push({ kind: 'fire', every: pv, cd: 5, src: 'pet' }); break;
+        case 'starbaby': M.scorePct += pv; break;
+        case 'ghost': timers.push({ kind: 'shield', every: pv, cd: pv, src: 'pet' }); break;
+        case 'luckycat': M.coinPct += pv; break;
+        case 'robot': timers.push({ kind: 'magnet', every: pv, cd: 10, src: 'pet' }); break;
+        case 'penguin': M.dashStart = Math.max(M.dashStart, pv); break;
+        case 'gembunny': M.diamondMul *= pv; M.coinPct += 10; break;
+        case 'butterfly': case 'frog': M.scorePct += pv; break;
       }
       this.timers = timers;
       return M;
@@ -152,23 +157,32 @@
       this.jumpHeld = down;
       const p = this.p;
       if (!p) return;
-      if (!down) { p.glideLock = false; return; }
+      if (!down) { p.gliding = false; return; }
       if (!this.running || this.paused || p.dead || this.finished) return;
       if (this.isFlying()) return;
+      const canGlide = p.glidesUsed < this.maxGlides;
       if (p.ground) {
         p.vy = -JV; p.ground = false; p.jumps = 1; p.slideT = 0;
         KP.audio.sfx('jump'); this.puff(PX, p.y, 6);
+      } else if (canGlide && p.jumps >= 1 && (p.vy > 0 || p.jumps >= this.maxJumps)) {
+        this.startGlide();
       } else if (p.jumps < this.maxJumps) {
         if (p.jumps === 0) p.jumps = 1;
         p.vy = -JV2; p.jumps++; p.spin = 1; p.gliding = false;
         KP.audio.sfx('jump2'); this.puff(PX, p.y - 20, 8, '#ffffff');
       }
     }
+    startGlide() {
+      const p = this.p;
+      p.gliding = true; p.glidesUsed++; p.glideT = 1.2; p.spin = 0;
+      p.vy = clamp(p.vy, 0, 140);
+      KP.audio.sfx('jump'); this.puff(PX, p.y - 120, 6, '#ffffff');
+    }
     slide(down) {
       this.slideHeld = down;
       const p = this.p;
       if (!down || !this.running || this.paused || !p || p.dead || this.isFlying()) return;
-      if (!p.ground) { p.vy = Math.max(p.vy, 1600); p.gliding = false; p.glideLock = true; }
+      if (!p.ground) { p.vy = Math.max(p.vy, 1600); p.gliding = false; }
       else { p.slideT = 0.55; KP.audio.sfx('slide'); }
     }
     useSkill() {
@@ -522,14 +536,15 @@
       } else {
         const prevY = p.y, wasGround = p.ground;
         p.vy += GRAV * (this.M.lowGrav ? 0.9 : 1) * dt;
-        // 滑翔：空中下落时按住跳跃，每段最长 1.2 秒
-        if (!p.ground && this.jumpHeld && p.vy > 0 && !p.glideLock && (p.gliding || p.glidesUsed < this.maxGlides)) {
-          if (!p.gliding) { p.gliding = true; p.glidesUsed++; p.glideT = 1.2; }
+        // 滑翔：由 jump() 立即开启，按住保持，每段最长 1.2 秒
+        if (p.gliding) {
           p.glideT -= dt;
-          p.vy = Math.min(p.vy, 140);
-          if (p.glideT <= 0) { p.gliding = false; p.glideLock = true; }
-          if (Math.random() < 0.4) this.parts.push({ x: px - 30, y: p.y - 150 + rnd(-6, 6), vx: -120, vy: 0, life: 0.5, max: 0.5, size: 4, col: this.ch.color, type: 'c', g: 0 });
-        } else if (p.gliding) { p.gliding = false; }
+          if (!this.jumpHeld || p.glideT <= 0) p.gliding = false;
+          else {
+            p.vy = Math.min(p.vy, 140);
+            if (Math.random() < 0.4) this.parts.push({ x: px - 30, y: p.y - 150 + rnd(-6, 6), vx: -120, vy: 0, life: 0.5, max: 0.5, size: 4, col: this.ch.color, type: 'c', g: 0 });
+          }
+        }
         p.y += p.vy * dt; p.ground = false;
         if (p.vy >= 0) {
           for (const q of this.plats) {
@@ -596,7 +611,7 @@
         const ddx = hcx - cn.x, ddy = hcy - cn.y;
         if (!cn.mag) {
           if (magnet && Math.abs(ddx) < range && Math.abs(ddy) < 420) cn.mag = true;
-          else if (this.M.bee && Math.hypot(beeX - cn.x, beeY - cn.y) < 150) cn.mag = true;
+          else if (this.M.beeR && Math.hypot(beeX - cn.x, beeY - cn.y) < this.M.beeR) cn.mag = true;
         }
         if (cn.mag) {
           const L = Math.hypot(ddx, ddy) || 1, v = 900 + this.speed;
@@ -962,7 +977,7 @@
       if (this.hint > 0) {
         c.globalAlpha = Math.min(1, this.hint);
         const msg = this.fly ? '按住 空格 / 右侧屏幕 上升，松开下降 · E 释放技能'
-          : '空格 跳跃（可' + this.maxJumps + '段跳）' + (this.maxGlides ? ' · 下落时按住空格滑翔' : '') + ' · ↓ 下滑 · E 技能';
+          : '空格 跳跃（可' + this.maxJumps + '段跳）' + (this.maxGlides ? ' · 起跳后下落时按住空格立即滑翔' : '') + ' · ↓ 下滑 · E 技能';
         c.fillStyle = 'rgba(30,14,60,.55)'; A.rr(c, W / 2 - 380, H - 64, 760, 44, 22); c.fill();
         txt(msg, W / 2, H - 42, 21, '#fff', 'center');
         c.globalAlpha = 1;

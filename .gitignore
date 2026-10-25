@@ -1,2 +1,9 @@
 .claude/
 .DS_Store
+# 原始大图只留在本地（每张约 1MB），游戏用的是 assets/sprites 里压缩后的 webp
+art-src/gen/
+art-src/test/
+art-src/*.jpg
+art-src/gen.log
+art-src/gen_progress.txt
+__pycache__/

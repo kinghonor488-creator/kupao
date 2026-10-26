@@ -39,6 +39,7 @@
     const key = vw + 'x' + vh + 'x' + dpr;
     if (key === lastKey) return;
     lastKey = key;
+    stage.style.width = W + 'px';
     stage.style.transform = `translate(${(vw - W * s) / 2}px, ${(vh - H * s) / 2}px) scale(${s})`;
     cv.width = Math.round(W * s * dpr); cv.height = Math.round(H * s * dpr);
     game.k = K = s * dpr;
@@ -127,6 +128,7 @@
     c.fillStyle = 'rgba(20,8,48,.25)'; c.fillRect(0, 0, W, H);
     // 聚光灯 + 旋转光束
     const ch = KP.charOf(P().equip.char);
+    c.save(); c.translate((W - 1280) / 2, 0);
     c.fillStyle = A.rg(c, 600, 430, 20, 330, [ch.color + '88', ch.color + '00']); c.fillRect(200, 80, 800, 600);
     c.save(); c.translate(600, 520); c.rotate(uiTime * 0.25);
     c.strokeStyle = 'rgba(255,255,255,.08)'; c.lineWidth = 16;
@@ -145,6 +147,7 @@
       c.fillStyle = i % 2 ? '#ffe14d' : '#fff'; c.fill();
     }
     c.globalAlpha = 1;
+    c.restore();
   }
 
   // ---------- 角色/坐骑/宠物/宝物 面板 ----------
@@ -555,6 +558,21 @@
     }
     requestAnimationFrame(loop);
   }
+  // ---------- 自动更新：发现新版本时（只在大厅里）刷新一次 ----------
+  function checkUpdate() {
+    if (!KP.VER || !window.fetch) return;
+    fetch('version.json?t=' + Date.now(), { cache: 'no-store' }).then(r => r.json()).then(j => {
+      if (!j.v || j.v === KP.VER || state !== 'hall') return;
+      let tried = '';
+      try { tried = sessionStorage.getItem('kp_reload') || ''; } catch (e) { }
+      if (tried === j.v) return; // 同一个版本只尝试刷新一次，避免死循环
+      try { sessionStorage.setItem('kp_reload', j.v); } catch (e) { }
+      location.replace(location.pathname + '?v=' + j.v);
+    }).catch(() => { });
+  }
+  document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') checkUpdate(); });
+  setTimeout(checkUpdate, 1500);
+
   buildHall();
   requestAnimationFrame(loop);
   KP.ui = { game, startGame, toHall, openPanel, openGacha, S };

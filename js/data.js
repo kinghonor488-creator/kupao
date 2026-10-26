@@ -1,6 +1,11 @@
 // 全局命名空间与游戏数据
 window.KP = window.KP || {};
-KP.W = 1280; KP.H = 720; KP.G = 600; // 逻辑分辨率与地面高度
+// 逻辑分辨率：高度固定 720，宽度跟随横屏的宽高比（16:9 到 21:9 之间），这样宽屏手机不会出现左右黑边
+KP.H = 720; KP.G = 600;
+KP.W = (function () {
+  const a = Math.max(window.innerWidth, window.innerHeight) / Math.max(1, Math.min(window.innerWidth, window.innerHeight));
+  return Math.round(Math.min(Math.max(a, 16 / 9), 21 / 9) * KP.H);
+})();
 
 // 稀有度：价格（金币或钻石）、重复抽到时折算的金币
 KP.RARITY = {

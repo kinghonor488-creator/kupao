@@ -5,7 +5,7 @@
   for (const k in META) {
     const im = new Image();
     im.onload = () => { IMG[k] = im; };
-    im.src = 'assets/sprites/' + k + '.webp';
+    im.src = 'assets/sprites/' + k + '.webp?v=' + (KP.VER || '');
   }
   A.sprite = k => IMG[k];
 
